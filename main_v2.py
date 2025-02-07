@@ -1,5 +1,8 @@
-"""Full-featured Telegram Bot MVP, adapted for Aiogram 3.x >= 3.7.0, storing user profiles in SQLite,
-AI-based placeholders for events, translation, etc."""
+"""Full-featured Telegram Bot MVP, adapted for Aiogram 3.x >= 3.7.0, storing user profiles in SQLite.
+Now includes:
+1) User city in registration,
+2) Real GigaChat-based translation via AI_API_KEY.
+"""
 
 import os
 import logging
@@ -13,6 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 import aiosqlite
+import aiohttp
 from dotenv import load_dotenv
 
 ###############################
@@ -27,7 +31,7 @@ from aiogram.client.bot import Bot, DefaultBotProperties
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-AI_API_KEY = os.getenv("AI_API_KEY")  # For external AI calls (e.g. translation, embeddings)
+AI_API_KEY = os.getenv("AI_API_KEY")  # For GigaChat usage
 DATABASE_PATH = os.getenv("DATABASE_PATH", "bot_database.db")
 
 ###############################
@@ -49,22 +53,27 @@ bot = Bot(
 # Database Setup
 ###############################
 # We'll have two tables:
-# 1) users (telegram_id, name, country, interests, language_level, is_mentor)
-# 2) events (id, title, description, tags, date)
+#   users (telegram_id, name, country, city, interests, language_level, is_mentor)
+#   events (id, title, description, tags, date)
+
+# We'll store user city so we can parse city-specific events in the future.
 
 async def init_db():
-    """Initialize the SQLite database if it doesn't exist"""
+    """Initialize the SQLite database (and do migrations if needed)."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        # Users table with 'city' column
         await db.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 telegram_id INTEGER PRIMARY KEY,
                 name TEXT,
                 country TEXT,
+                city TEXT,
                 interests TEXT,
                 language_level TEXT,
                 is_mentor INTEGER DEFAULT 0
             )
         ''')
+
         await db.execute('''
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,7 +98,46 @@ async def init_db():
                 sample_events
             )
             await db.commit()
+
+        # Optional: If we want to add new columns in the future, we could do migrations here.
+
         await db.commit()
+
+###############################
+# GigaChat Translation
+###############################
+# We'll define an async function that uses GigaChat's API to translate text.
+
+async def gigachat_translate(text: str, target_lang: str = "ru") -> str:
+    """
+    Example function to call GigaChat API for translation.
+    We'll assume there's an endpoint that accepts JSON with: {"text": ..., "target_language": ...}
+    and returns {"translated_text": ...}
+
+    Adjust endpoint, headers, etc. as per GigaChat's real API.
+    """
+    if not AI_API_KEY:
+        return f"[ERROR] GigaChat key not provided. Cannot translate: {text}"
+
+    endpoint = "https://api.gigachat.example/v1/translate"  # Fake example endpoint
+    headers = {
+        "Authorization": f"Bearer {AI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "text": text,
+        "target_language": target_lang
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(endpoint, headers=headers, json=payload) as response:
+            if response.status == 200:
+                data = await response.json()
+                # Suppose GigaChat returns {"translated_text": "..."}
+                return data.get("translated_text", "[No 'translated_text' in response]")
+            else:
+                err_text = await response.text()
+                return f"[Error {response.status}] {err_text}"
 
 ###############################
 # FSM States
@@ -97,6 +145,7 @@ async def init_db():
 class RegistrationState(StatesGroup):
     waiting_for_name = State()
     waiting_for_country = State()
+    waiting_for_city = State()
     waiting_for_interests = State()
     waiting_for_language = State()
 
@@ -137,6 +186,12 @@ async def process_name(message: Message, state: FSMContext):
 @router.message(RegistrationState.waiting_for_country, F.content_type == ContentType.TEXT)
 async def process_country(message: Message, state: FSMContext):
     await state.update_data(country=message.text.strip())
+    await message.answer("In which city do you live?")
+    await state.set_state(RegistrationState.waiting_for_city)
+
+@router.message(RegistrationState.waiting_for_city, F.content_type == ContentType.TEXT)
+async def process_city(message: Message, state: FSMContext):
+    await state.update_data(city=message.text.strip())
     await message.answer("What are your interests? (e.g. music, sports, culture)")
     await state.set_state(RegistrationState.waiting_for_interests)
 
@@ -151,16 +206,16 @@ async def process_language(message: Message, state: FSMContext):
     user_data = await state.get_data()
     user_data["language_level"] = message.text.strip()
 
-    # Insert into DB
     user_id = message.from_user.id
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute(
-            "INSERT INTO users (telegram_id, name, country, interests, language_level) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO users (telegram_id, name, country, city, interests, language_level) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (
                 user_id,
                 user_data["name"],
                 user_data["country"],
+                user_data["city"],
                 user_data["interests"],
                 user_data["language_level"]
             )
@@ -180,13 +235,15 @@ async def process_language(message: Message, state: FSMContext):
 ###############################
 @router.message(Command(commands=["help"]))
 async def cmd_help(message: Message):
-    help_text = ("Here are some commands you can use:\n"
-                 "/start - Start or reset the bot (registration)\n"
-                 "/events - Get event recommendations\n"
-                 "/mentor - Request a mentor\n"
-                 "/translate <text> - Translate text (AI-based)\n"
-                 "/phrase <topic> - Get useful phrases\n"
-                 "/help - Show this help message")
+    help_text = (
+        "Here are some commands you can use:\n"
+        "/start - Start or reset the bot (registration)\n"
+        "/events - Get event recommendations\n"
+        "/mentor - Request a mentor\n"
+        "/translate &lt;text&gt; - Translate text (via GigaChat)\n"
+        "/phrase &lt;topic&gt; - Get useful phrases\n"
+        "/help - Show this help message"
+    )
     await message.answer(help_text)
 
 ###############################
@@ -197,14 +254,15 @@ async def cmd_events(message: Message):
     user_id = message.from_user.id
     # Retrieve user interests
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        cursor = await db.execute("SELECT interests FROM users WHERE telegram_id=?", (user_id,))
+        cursor = await db.execute("SELECT interests, city FROM users WHERE telegram_id=?", (user_id,))
         row = await cursor.fetchone()
         if not row:
             await message.answer("You are not registered yet. Please use /start.")
             return
-        user_interests = row[0]
+        user_interests, user_city = row[0], row[1]
 
         # For simplicity, naive match on event tags.
+        # In the future, we can parse city-based events. For now, we ignore city.
         all_events = []
         cursor = await db.execute("SELECT id, title, description, tags, date FROM events")
         events_data = await cursor.fetchall()
@@ -257,8 +315,7 @@ async def cmd_mentor(message: Message):
 ###############################
 @router.message(Command(commands=["translate"]))
 async def cmd_translate(message: Message):
-    # Example usage: /translate Hello World
-    # We'll parse the text after the command.
+    # Usage: /translate Hello World
     text_parts = message.text.split(maxsplit=1)
     if len(text_parts) < 2:
         await message.answer("Please provide text to translate. Example: /translate Hello")
@@ -272,10 +329,9 @@ async def cmd_translate(message: Message):
         )
         return
 
-    # TODO: actual translation call with real AI API
-    translated_text = f"[AI translation placeholder for]: {to_translate}"
-
-    await message.answer(translated_text)
+    # Attempt real GigaChat translation
+    translated_text = await gigachat_translate(to_translate, target_lang="ru")
+    await message.answer(f"Translated to Russian:\n{translated_text}")
 
 ###############################
 # /phrase handler
