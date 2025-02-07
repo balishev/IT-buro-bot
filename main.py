@@ -9,10 +9,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 from dotenv import load_dotenv
 
-##############################################
-# Доп. импорты для GigaChat (через langchain_gigachat)
-##############################################
-# pip install langchain-core langchain-gigachat
+
 try:
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_gigachat.chat_models import GigaChat
