@@ -336,9 +336,9 @@ async def process_registration(message: types.Message):
     elif user[14] is None:
         cursor.execute("UPDATE users SET weekly_plans = ? WHERE telegram_id = ?", (message.text, telegram_id))
         conn.commit()
-        await message.answer("Регистрация прошла успешно!")
+        await message.answer("Регистрация прошла успешно! Для поиска мероприятий напишите /event")
     else:
-        await message.answer("Вы уже зарегистрированы!")
+        await message.answer("Вы уже зарегистрированы! Для поиска мероприятий напишите /event")
 
     conn.close()
 
