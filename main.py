@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sqlite3
+import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
@@ -15,7 +16,10 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Инициализация базы данных
+
+##############################################
+# Инициализация базы данных пользователей
+##############################################
 def init_db():
     conn = sqlite3.connect("students.db")
     cursor = conn.cursor()
@@ -41,9 +45,12 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 init_db()
 
+##############################################
 # Клавиатура выбора языка
+##############################################
 language_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="English"), KeyboardButton(text="Русский")],
@@ -54,6 +61,56 @@ language_keyboard = ReplyKeyboardMarkup(
     one_time_keyboard=True
 )
 
+
+##############################################
+# Функция GigaChat (заглушка)
+##############################################
+def gigachat_find_relevant_events(user_interests, all_events):
+    url = "https://api.gigachat.ru/v1/find-events"  # Примерный эндпоинт
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer YOUR_GIGACHAT_TOKEN"  # Замените на реальный токен
+    }
+    payload = {
+        "user_interests": user_interests,
+        "events": all_events
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("description", "Нет поля description в ответе GigaChat.")
+        else:
+            return f"GigaChat вернул ошибку: {response.status_code}"
+    except Exception as e:
+        return f"Ошибка при запросе к GigaChat: {e}"
+
+
+##############################################
+# Получить все события из events.db
+##############################################
+def get_all_events():
+    conn = sqlite3.connect("events.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT title, date, link, short_desc FROM events")
+    rows = cursor.fetchall()
+    conn.close()
+
+    events_list = []
+    for row in rows:
+        events_list.append({
+            "title": row[0],
+            "date": row[1],
+            "link": row[2],
+            "short_desc": row[3]
+        })
+    return events_list
+
+
+##############################################
+# /start
+##############################################
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
     telegram_id = message.from_user.id
@@ -71,6 +128,47 @@ async def start_handler(message: types.Message):
     # Предложим выбрать язык
     await message.answer("Выберите язык:", reply_markup=language_keyboard)
 
+
+##############################################
+# /event
+##############################################
+@dp.message(Command("event"))
+async def event_command_handler(message: types.Message):
+    telegram_id = message.from_user.id
+
+    # 1. Получаем профиль пользователя
+    conn = sqlite3.connect("students.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
+    user = cursor.fetchone()
+    conn.close()
+
+    if not user:
+        await message.answer("Сначала нужно зарегистрироваться через /start.")
+        return
+
+    # Собираем интересы (hobbies + future_interests)
+    user_interests = (user[10] or "") + " " + (user[11] or "")
+    user_interests = user_interests.strip()
+    if not user_interests:
+        user_interests = "нет интересов"
+
+    # 2. Забираем все события из локальной БД
+    all_events = get_all_events()
+    if not all_events:
+        await message.answer("В базе нет мероприятий. Попробуйте позже.")
+        return
+
+    # 3. Обращаемся к GigaChat
+    result_text = gigachat_find_relevant_events(user_interests, all_events)
+
+    # 4. Возвращаем результат пользователю
+    await message.answer(result_text)
+
+
+##############################################
+# Обработка прочих сообщений: регистрация
+##############################################
 @dp.message()
 async def process_registration(message: types.Message):
     telegram_id = message.from_user.id
@@ -80,7 +178,7 @@ async def process_registration(message: types.Message):
     user = cursor.fetchone()
 
     if user is None:
-        # Если по какой-то причине отсутствует запись, не делаем ничего
+        # Если почему-то нет записи, игнорируем
         conn.close()
         return
 
@@ -101,7 +199,6 @@ async def process_registration(message: types.Message):
     #   13: social_level,
     #   14: weekly_plans
     # )
-
     if user[2] is None:
         # Сохраняем язык
         cursor.execute("UPDATE users SET language = ? WHERE telegram_id = ?", (message.text, telegram_id))
@@ -161,7 +258,8 @@ async def process_registration(message: types.Message):
         # Сохраняем уровень общительности
         cursor.execute("UPDATE users SET social_level = ? WHERE telegram_id = ?", (message.text, telegram_id))
         conn.commit()
-        await message.answer("Если у тебя уже есть внеурочные планы на неделе, ты можешь о них написать здесь (в формате: понедельник; 15:00; плаванье)")
+        await message.answer(
+            "Если у тебя уже есть внеурочные планы на неделе, ты можешь о них написать здесь (в формате: понедельник; 15:00; плаванье)")
     elif user[14] is None:
         # Сохраняем внеурочные планы
         cursor.execute("UPDATE users SET weekly_plans = ? WHERE telegram_id = ?", (message.text, telegram_id))
@@ -172,8 +270,13 @@ async def process_registration(message: types.Message):
 
     conn.close()
 
+
+##############################################
+# Точка входа
+##############################################
 async def main():
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
