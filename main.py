@@ -30,7 +30,12 @@ def init_db():
         country TEXT,
         university TEXT,
         faculty TEXT,
-        group_name TEXT
+        group_name TEXT,
+        hobbies TEXT,
+        future_interests TEXT,
+        activity_level INTEGER,
+        social_level INTEGER,
+        weekly_plans TEXT
     )
     """)
     conn.commit()
@@ -94,6 +99,27 @@ async def process_registration(message: types.Message):
         await message.answer("Введите название группы:")
     elif user[8] is None:
         cursor.execute("UPDATE users SET group_name = ? WHERE telegram_id = ?", (message.text, telegram_id))
+        conn.commit()
+        await message.answer("Расскажи немного о своих интересах: Укажи свои хобби")
+    elif user[9] is None:
+        cursor.execute("UPDATE users SET hobbies = ? WHERE telegram_id = ?", (message.text, telegram_id))
+        conn.commit()
+        await message.answer("Что бы тебе хотелось изучить в будущем?")
+    elif user[10] is None:
+        cursor.execute("UPDATE users SET future_interests = ? WHERE telegram_id = ?", (message.text, telegram_id))
+        conn.commit()
+        await message.answer("Оцени, насколько ты активный человек от 1 до 10")
+    elif user[11] is None:
+        cursor.execute("UPDATE users SET activity_level = ? WHERE telegram_id = ?", (message.text, telegram_id))
+        conn.commit()
+        await message.answer("Оцени, насколько ты общительный человек от 1 до 10")
+    elif user[12] is None:
+        cursor.execute("UPDATE users SET social_level = ? WHERE telegram_id = ?", (message.text, telegram_id))
+        conn.commit()
+        await message.answer(
+            "Если у тебя уже есть внеурочные планы на неделе, ты можешь о них написать здесь (в формате: понедельник; 15:00; плаванье)")
+    elif user[13] is None:
+        cursor.execute("UPDATE users SET weekly_plans = ? WHERE telegram_id = ?", (message.text, telegram_id))
         conn.commit()
         await message.answer("Регистрация прошла успешно!")
     else:
