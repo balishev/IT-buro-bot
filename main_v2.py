@@ -7,23 +7,25 @@ Now includes:
 import os
 import logging
 import asyncio
-
+import requests
 from aiogram import Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, ContentType
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-
+import datetime
 import aiosqlite
 import aiohttp
 from dotenv import load_dotenv
-
+from datetime import datetime, timedelta
 ###############################
 # Aiogram 3.7+ Bot initialization changes
 ###############################
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.bot import Bot, DefaultBotProperties
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_gigachat.chat_models import GigaChat
 
 ###############################
 # Load environment variables
@@ -49,14 +51,93 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode="HTML")
 )
 
-###############################
-# Database Setup
-###############################
-# We'll have two tables:
-#   users (telegram_id, name, country, city, interests, language_level, is_mentor)
-#   events (id, title, description, tags, date)
 
-# We'll store user city so we can parse city-specific events in the future.
+def get_upcoming_events(city='msk', days_ahead=30, max_events=30):
+    # Базовый URL API KudaGo
+    base_url = "https://kudago.com/public-api/v1.4/events/"
+
+    # Параметры запроса
+    params = {
+        'location': city,
+        'actual_since': int(datetime.now().timestamp()),
+        'actual_until': int((datetime.now() + timedelta(days=days_ahead)).timestamp()),
+        'page_size': max_events,
+        'lang': 'ru',
+        'fields': 'id,title,dates,place,location,is_free,price,site_url',
+        'expand': 'dates,place'
+    }
+
+    # Отправка GET-запроса
+    response = requests.get(base_url, params=params)
+
+    # Проверка успешности запроса
+    if response.status_code == 200:
+        events = response.json().get('results', [])
+        ev_lst = []
+        for event in events:
+            '''print(f"Название: {event['title']}")
+            print(f"Дата: {event['dates'][0]['start']}")
+            print(f"Место: {event['place']['title'] if event['place'] else 'Не указано'}")
+            print(f"Стоимость: {'Бесплатно' if event['is_free'] else event.get('price', 'Не указана')}")
+            print(f"Ссылка: {event['site_url']}")
+            print("-" * 40)'''
+            ev_lst.append(event['title'])
+    else:
+        print(f"Ошибка при запросе данных: {response.status_code}")
+        return []
+
+
+# Пример использования функции
+
+
+def suggest(interests, events):
+    # print('start')
+    load_dotenv()
+    credentials = os.getenv("GIGACHAT_CREDENTIALS", "")
+    # Авторизация в GigaChat
+    model = GigaChat(
+        credentials=credentials,
+        scope="GIGACHAT_API_PERS",
+        model="GigaChat",
+        # Отключает проверку наличия сертификатов НУЦ Минцифры
+        verify_ssl_certs=False,
+    )
+
+    messages = [
+        SystemMessage(
+            content=f"Ты бот, который помогает иностранному студенту ассимилироваться в России, из предложеного списка мероприятий предложи студенту мероприятия на основе его интересов: {interests}:"
+        )
+    ]
+    # print('1')
+    messages.append(HumanMessage(content=str(events)))
+    res = model.invoke(messages)
+    messages.append(res)
+    return res.content
+
+
+async def gigachat_translate(text: str, target_language: str = "ru") -> str:
+    load_dotenv()
+    credentials = os.getenv("GIGACHAT_CREDENTIALS", "")
+    # Авторизация в GigaChat
+    model = GigaChat(
+        credentials=credentials,
+        scope="GIGACHAT_API_PERS",
+        model="GigaChat",
+        # Отключает проверку наличия сертификатов НУЦ Минцифры
+        verify_ssl_certs=False,
+    )
+
+    messages = [
+        SystemMessage(
+            content=f"Ты бот-переводчик, переведи текст на язык {target_language}:"
+        )
+    ]
+
+    messages.append(HumanMessage(content=text))
+    res = model.invoke(messages)
+    messages.append(res)
+    return res.content
+
 
 async def init_db():
     """Initialize the SQLite database (and do migrations if needed)."""
@@ -89,9 +170,12 @@ async def init_db():
         if count == 0:
             sample_events = [
                 ("City Tour", "Explore the main city attractions.", "tour,city,sightseeing", "2025-03-10"),
-                ("Language Exchange", "Practice languages with locals.", "language,exchange,communication", "2025-03-11"),
+                ("Language Exchange", "Practice languages with locals.", "language,exchange,communication",
+                 "2025-03-11"),
                 ("Music Festival", "Enjoy live music performances.", "music,festival,concert", "2025-03-12"),
-                ("Russian Culture 101", "Intro session on local traditions.", "culture,traditions,lecture", "2025-03-15")
+                (
+                    "Russian Culture 101", "Intro session on local traditions.", "culture,traditions,lecture",
+                    "2025-03-15")
             ]
             await db.executemany(
                 "INSERT INTO events (title, description, tags, date) VALUES (?,?,?,?)",
@@ -103,41 +187,6 @@ async def init_db():
 
         await db.commit()
 
-###############################
-# GigaChat Translation
-###############################
-# We'll define an async function that uses GigaChat's API to translate text.
-
-async def gigachat_translate(text: str, target_lang: str = "ru") -> str:
-    """
-    Example function to call GigaChat API for translation.
-    We'll assume there's an endpoint that accepts JSON with: {"text": ..., "target_language": ...}
-    and returns {"translated_text": ...}
-
-    Adjust endpoint, headers, etc. as per GigaChat's real API.
-    """
-    if not AI_API_KEY:
-        return f"[ERROR] GigaChat key not provided. Cannot translate: {text}"
-
-    endpoint = "https://api.gigachat.example/v1/translate"  # Fake example endpoint
-    headers = {
-        "Authorization": f"Bearer {AI_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "text": text,
-        "target_language": target_lang
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(endpoint, headers=headers, json=payload) as response:
-            if response.status == 200:
-                data = await response.json()
-                # Suppose GigaChat returns {"translated_text": "..."}
-                return data.get("translated_text", "[No 'translated_text' in response]")
-            else:
-                err_text = await response.text()
-                return f"[Error {response.status}] {err_text}"
 
 ###############################
 # FSM States
@@ -149,11 +198,14 @@ class RegistrationState(StatesGroup):
     waiting_for_interests = State()
     waiting_for_language = State()
 
+
 ###############################
 # Create Dispatcher & Router
 ###############################
 from aiogram import Router
+
 router = Router()
+
 
 ###############################
 # /start handler
@@ -177,11 +229,13 @@ async def cmd_start(message: Message, state: FSMContext):
         await message.answer("Hello! Let's register you. What's your name?")
         await state.set_state(RegistrationState.waiting_for_name)
 
+
 @router.message(RegistrationState.waiting_for_name, F.content_type == ContentType.TEXT)
 async def process_name(message: Message, state: FSMContext):
     await state.update_data(name=message.text.strip())
     await message.answer("What country are you from?")
     await state.set_state(RegistrationState.waiting_for_country)
+
 
 @router.message(RegistrationState.waiting_for_country, F.content_type == ContentType.TEXT)
 async def process_country(message: Message, state: FSMContext):
@@ -189,17 +243,20 @@ async def process_country(message: Message, state: FSMContext):
     await message.answer("In which city do you live?")
     await state.set_state(RegistrationState.waiting_for_city)
 
+
 @router.message(RegistrationState.waiting_for_city, F.content_type == ContentType.TEXT)
 async def process_city(message: Message, state: FSMContext):
     await state.update_data(city=message.text.strip())
     await message.answer("What are your interests? (e.g. music, sports, culture)")
     await state.set_state(RegistrationState.waiting_for_interests)
 
+
 @router.message(RegistrationState.waiting_for_interests, F.content_type == ContentType.TEXT)
 async def process_interests(message: Message, state: FSMContext):
     await state.update_data(interests=message.text.strip())
     await message.answer("What is your language level? (e.g. A1, B2, C1)")
     await state.set_state(RegistrationState.waiting_for_language)
+
 
 @router.message(RegistrationState.waiting_for_language, F.content_type == ContentType.TEXT)
 async def process_language(message: Message, state: FSMContext):
@@ -230,6 +287,7 @@ async def process_language(message: Message, state: FSMContext):
 
     await state.clear()
 
+
 ###############################
 # /help handler
 ###############################
@@ -246,6 +304,7 @@ async def cmd_help(message: Message):
     )
     await message.answer(help_text)
 
+
 ###############################
 # /events handler
 ###############################
@@ -260,8 +319,12 @@ async def cmd_events(message: Message):
             await message.answer("You are not registered yet. Please use /start.")
             return
         user_interests, user_city = row[0], row[1]
+        events = get_upcoming_events()
 
-        # For simplicity, naive match on event tags.
+        txt = suggest(user_interests, events)
+        print(txt)
+        await message.answer(txt)
+        '''# For simplicity, naive match on event tags.
         # In the future, we can parse city-based events. For now, we ignore city.
         all_events = []
         cursor = await db.execute("SELECT id, title, description, tags, date FROM events")
@@ -284,7 +347,8 @@ async def cmd_events(message: Message):
     response_lines = ["Here are some recommended events:"]
     for idx, (title, desc, date_) in enumerate(all_events, start=1):
         response_lines.append(f"\n{idx}) {title}\nDate: {date_}\nDescription: {desc}")
-    await message.answer("\n".join(response_lines))
+    await message.answer("\n".join(response_lines))'''
+
 
 ###############################
 # /mentor handler
@@ -301,7 +365,8 @@ async def cmd_mentor(message: Message):
             return
 
         # For simplicity, pick a random mentor
-        cursor_mentor = await db.execute("SELECT telegram_id, name FROM users WHERE is_mentor=1 ORDER BY RANDOM() LIMIT 1")
+        cursor_mentor = await db.execute(
+            "SELECT telegram_id, name FROM users WHERE is_mentor=1 ORDER BY RANDOM() LIMIT 1")
         mentor_row = await cursor_mentor.fetchone()
         if not mentor_row:
             await message.answer("No mentors available at the moment.")
@@ -309,6 +374,7 @@ async def cmd_mentor(message: Message):
         mentor_id, mentor_name = mentor_row
 
     await message.answer(f"We found a mentor: {mentor_name}. They will contact you soon!")
+
 
 ###############################
 # /translate handler
@@ -330,8 +396,9 @@ async def cmd_translate(message: Message):
         return
 
     # Attempt real GigaChat translation
-    translated_text = await gigachat_translate(to_translate, target_lang="ru")
+    translated_text = await gigachat_translate(to_translate)
     await message.answer(f"Translated to Russian:\n{translated_text}")
+
 
 ###############################
 # /phrase handler
@@ -364,6 +431,7 @@ async def cmd_phrase(message: Message):
         text_out = f"No pre-defined phrases for '{topic}'."
     await message.answer(text_out)
 
+
 ###############################
 # Startup event
 ###############################
@@ -371,6 +439,7 @@ async def cmd_phrase(message: Message):
 async def on_startup(dispatcher: Dispatcher, bot: Bot):
     logging.info("Bot is starting up. Initializing DB...")
     await init_db()
+
 
 ###############################
 # Main entry point
@@ -382,6 +451,7 @@ async def main():
 
     # Start polling
     await dp.start_polling(bot, skip_updates=True)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
