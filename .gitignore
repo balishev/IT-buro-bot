@@ -1,5 +1,5 @@
 .env
 users.db
 students.db
-events.db
-bot_database.db
+old/events.db
+old/bot_database.db
